@@ -36,7 +36,7 @@ async function iniciarBanco() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS candidaturas (
       id SERIAL PRIMARY KEY,
-      nome TEXT, telefone TEXT, email TEXT, escolaridade TEXT, vaga TEXT,
+      nome TEXT, telefone TEXT, email TEXT, escolaridade TEXT, vaga TEXT, experiencia TEXT,
       recebido_em TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS atestados (
@@ -78,9 +78,10 @@ SE FOR CANDIDATO EXTERNO:
   3. E-mail
   4. Escolaridade (ex: Ensino Médio completo, Técnico, Superior)
   5. Vaga de interesse
-- Após coletar todos os dados, peça para a pessoa enviar o currículo como arquivo (PDF, foto ou documento) nessa mesma conversa do WhatsApp
-- Quando tiver TODOS os dados confirmados, inclua ao final:
-[SALVAR_CANDIDATURA:{"nome":"Nome Completo","telefone":"xx xxxxx-xxxx","email":"email@exemplo.com","escolaridade":"Ensino Médio completo","vaga":"Nome da Vaga"}]
+- Depois pergunte: "Você tem alguma experiência anterior que gostaria de destacar? Pode ser de empregos anteriores, cursos ou qualquer coisa relevante para a vaga." — se a pessoa quiser responder, ótimo; se não quiser, tudo bem, siga em frente.
+- Por último pergunte se a pessoa deseja anexar um currículo em PDF ou imagem nessa conversa. Deixe claro que é opcional e que o cadastro será registrado de qualquer forma.
+- Quando tiver os dados principais confirmados, inclua ao final:
+[SALVAR_CANDIDATURA:{"nome":"Nome Completo","telefone":"xx xxxxx-xxxx","email":"email@exemplo.com","escolaridade":"Ensino Médio completo","vaga":"Nome da Vaga","experiencia":"Experiência informada ou Não informada"}]
 - Informe que o RH entrará em contato em até 5 dias úteis
 
 VAGAS DISPONÍVEIS:
@@ -89,8 +90,8 @@ VAGAS DISPONÍVEIS:
 3. Motorista de Entregas (2 vagas) - Turno Diurno - CNH categoria D
 4. Auxiliar Administrativo (1 vaga) - Turno Comercial - Ensino Médio, pacote Office
 5. Analista de Qualidade (1 vaga) - Turno Diurno - Formação em Química ou Alimentos
-6. Técnico de Segurança do Trabalho (1 vaga) - Turno Misto - Curso técnico de segurança do trabalho
-7. Ajudante de Carga e Descarga (2 Vagas) - Turno Diuno - Turno Noturno - Ensino Médio
+6. Técnico de Segurança do Trabalho (1 vaga) - Turno 12h por 36h - Curso técnico em segurança do trabalho
+7. Ajudante de Carga e Descarga (3 vagas) - Turno Diurno - Turno Noturno - Ensino fundamental e médio
 
 SE FOR FUNCIONÁRIO:
 Ofereça as 4 opções abaixo e colete os dados conforme cada caso:
@@ -157,8 +158,8 @@ app.post('/webhook', async (req, res) => {
         const dados = JSON.parse(match[2]);
         if (tipo === 'candidatura') {
           await pool.query(
-            'INSERT INTO candidaturas (nome, telefone, email, escolaridade, vaga) VALUES ($1,$2,$3,$4,$5)',
-            [dados.nome, dados.telefone, dados.email, dados.escolaridade||'', dados.vaga]
+            'INSERT INTO candidaturas (nome, telefone, email, escolaridade, vaga, experiencia) VALUES ($1,$2,$3,$4,$5,$6)',
+            [dados.nome, dados.telefone, dados.email, dados.escolaridade||'', dados.vaga, dados.experiencia||'Não informada']
           );
         } else if (tipo === 'atestado') {
           await pool.query(
