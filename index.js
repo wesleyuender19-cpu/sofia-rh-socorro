@@ -1,74 +1,121 @@
-const express = require('express');
+const express    = require('express');
 const bodyParser = require('body-parser');
-const fetch = require('node-fetch');
+const fetch      = require('node-fetch');
+const { Pool }   = require('pg');
+const twilio     = require('twilio');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// ── Configurações (preenchidas via variáveis de ambiente no Railway) ──────────
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+// ── CORS para o painel acessar ────────────────────────────────────────────────
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
+// ── Configurações ─────────────────────────────────────────────────────────────
+const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN  = process.env.TWILIO_AUTH_TOKEN;
+const DATABASE_URL       = process.env.DATABASE_URL;
+const PAINEL_API_KEY     = process.env.PAINEL_API_KEY || 'socorro-rh-2024';
 
-const twilio = require('twilio');
-const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-// ── Memória de conversas por número ──────────────────────────────────────────
+// ── Banco de dados ────────────────────────────────────────────────────────────
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+async function iniciarBanco() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS candidaturas (
+      id SERIAL PRIMARY KEY,
+      nome TEXT, telefone TEXT, email TEXT, vaga TEXT,
+      recebido_em TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS atestados (
+      id SERIAL PRIMARY KEY,
+      nome TEXT, matricula TEXT, setor TEXT,
+      data_inicio TEXT, dias TEXT, cid TEXT, medico TEXT,
+      recebido_em TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS exames (
+      id SERIAL PRIMARY KEY,
+      nome TEXT, matricula TEXT, setor TEXT,
+      tipo TEXT, data_preferencia TEXT, turno TEXT, observacoes TEXT,
+      recebido_em TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS faltas (
+      id SERIAL PRIMARY KEY,
+      nome TEXT, matricula TEXT, setor TEXT,
+      data_falta TEXT, motivo TEXT, apresenta_atestado TEXT, descricao TEXT,
+      recebido_em TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  console.log('Banco de dados pronto!');
+}
+
+// ── Memória de conversas ──────────────────────────────────────────────────────
 const conversas = {};
 
-// ── System prompt da Sofia ────────────────────────────────────────────────────
+// ── System Prompt ─────────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `Você é a Sofia, assistente virtual de RH da Socorro Indústria de Bebidas.
+Você atende pelo WhatsApp tanto candidatos externos quanto funcionários.
 
-Você atende tanto candidatos externos quanto funcionários da empresa pelo WhatsApp.
-
-INÍCIO DA CONVERSA:
-Sempre comece perguntando se a pessoa é candidato externo ou funcionário da empresa.
+INÍCIO: Sempre pergunte primeiro se a pessoa é candidato externo ou funcionário.
 
 SE FOR CANDIDATO EXTERNO:
-- Informe as vagas disponíveis e tire dúvidas sobre o processo seletivo
-- Colete: nome completo, telefone, e-mail e vaga de interesse
-- Informe que o currículo pode ser enviado como arquivo nessa mesma conversa
-- Diga que o RH entrará em contato em até 5 dias úteis
+- Apresente as vagas e tire dúvidas
+- Colete em ordem: nome completo, telefone, e-mail e vaga de interesse
+- Quando tiver TODOS os dados confirmados pelo candidato, inclua ao final:
+[SALVAR_CANDIDATURA:{"nome":"Nome Completo","telefone":"xx xxxxx-xxxx","email":"email@exemplo.com","vaga":"Nome da Vaga"}]
+- Informe que o RH entrará em contato em até 5 dias úteis
 
 VAGAS DISPONÍVEIS:
-1. Operador de Produção (2 vagas) - Turno: Noturno - Requisitos: Ensino Médio completo, experiência em linha de produção
-2. Auxiliar de Manutenção (1 vaga) - Turno: Diurno - Requisitos: Curso técnico em mecânica ou elétrica
-3. Motorista de Entregas (2 vagas) - Turno: Diurno - Requisitos: CNH categoria D, experiência comprovada
-4. Auxiliar Administrativo (1 vaga) - Turno: Comercial - Requisitos: Ensino Médio completo, pacote Office básico
-5. Analista de Qualidade (1 vaga) - Turno: Diurno - Requisitos: Formação em Química, Alimentos ou áreas afins
+1. Operador de Produção (2 vagas) - Turno Noturno - Ensino Médio, experiência em produção
+2. Auxiliar de Manutenção (1 vaga) - Turno Diurno - Curso técnico em mecânica ou elétrica
+3. Motorista de Entregas (2 vagas) - Turno Diurno - CNH categoria D
+4. Auxiliar Administrativo (1 vaga) - Turno Comercial - Ensino Médio, pacote Office
+5. Analista de Qualidade (1 vaga) - Turno Diurno - Formação em Química ou Alimentos
 
 SE FOR FUNCIONÁRIO:
-Ofereça as opções:
-1. Enviar atestado médico — peça: nome, matrícula, data de início, quantidade de dias e CID se tiver. Oriente a enviar o arquivo do atestado nessa conversa.
-2. Agendar exame ocupacional (PCMSO) — peça: nome, matrícula, tipo de exame, data de preferência e turno disponível.
-3. Dúvida de RH — responda normalmente. Para dúvidas muito específicas como saldo de férias ou valor de holerite, oriente a ligar no ramal 201.
-4. Comunicar falta — peça: nome, matrícula, data da falta, motivo e se vai apresentar atestado.
+Ofereça as 4 opções e colete os dados:
 
-INSTRUÇÕES GERAIS:
-- Seja sempre cordial, empática e natural.
-- Use linguagem clara e acessível, sem ser informal demais.
-- NUNCA use asteriscos, markdown ou formatação especial — o WhatsApp não renderiza bem.
-- Escreva em parágrafos curtos e naturais, máximo 3 parágrafos por resposta.
-- Confirme sempre os dados recebidos antes de encerrar o atendimento.
-- Horário de atendimento humano do RH: segunda a sexta, 8h às 17h.`;
+1. ATESTADO MÉDICO: colete nome, matrícula, setor, data de início, dias e CID se tiver.
+Quando confirmado, inclua ao final:
+[SALVAR_ATESTADO:{"nome":"Nome","matricula":"00000","setor":"Setor","data_inicio":"DD/MM/AAAA","dias":"2","cid":"J00","medico":"Dr. Nome"}]
 
-// ── Rota principal — recebe mensagens do Twilio ───────────────────────────────
+2. EXAME OCUPACIONAL: colete nome, matrícula, setor, tipo, data preferida e turno.
+Quando confirmado, inclua ao final:
+[SALVAR_EXAME:{"nome":"Nome","matricula":"00000","setor":"Setor","tipo":"Periódico","data_preferencia":"DD/MM/AAAA","turno":"Manhã","observacoes":""}]
+
+3. DÚVIDA DE RH: responda normalmente. Dúvidas específicas como saldo de férias ou holerite: oriente ramal 201.
+
+4. COMUNICADO DE FALTA: colete nome, matrícula, setor, data, motivo e se vai apresentar atestado.
+Quando confirmado, inclua ao final:
+[SALVAR_FALTA:{"nome":"Nome","matricula":"00000","setor":"Setor","data_falta":"DD/MM/AAAA","motivo":"Doença","apresenta_atestado":"Sim","descricao":""}]
+
+INSTRUÇÕES:
+- Seja cordial, empática e natural. Parágrafos curtos, máximo 3 por resposta.
+- NUNCA use asteriscos ou markdown.
+- Confirme os dados com o usuário antes de salvar.
+- Os blocos [SALVAR_...] são invisíveis para o usuário, apenas para o sistema.
+- Atendimento humano: segunda a sexta, 8h às 17h.`;
+
+// ── Webhook — recebe mensagens do Twilio ──────────────────────────────────────
 app.post('/webhook', async (req, res) => {
   const de      = req.body.From;
   const mensagem = req.body.Body || '';
 
-  // Inicializa histórico se for primeira mensagem
-  if (!conversas[de]) {
-    conversas[de] = [];
-  }
-
+  if (!conversas[de]) conversas[de] = [];
   conversas[de].push({ role: 'user', content: mensagem });
-
-  // Mantém no máximo 20 mensagens por conversa para não estourar tokens
-  if (conversas[de].length > 20) {
-    conversas[de] = conversas[de].slice(-20);
-  }
+  if (conversas[de].length > 20) conversas[de] = conversas[de].slice(-20);
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -86,33 +133,94 @@ app.post('/webhook', async (req, res) => {
       })
     });
 
-    const data = await response.json();
-    const resposta = data.content?.[0]?.text || 'Desculpe, ocorreu um erro. Tente novamente em instantes.';
+    const data   = await response.json();
+    let resposta = data.content?.[0]?.text || 'Desculpe, ocorreu um erro. Tente novamente.';
+
+    // ── Detectar e salvar dados no banco ──────────────────────────────────────
+    const salvarRegex = /\[SALVAR_(\w+):(.*?)\]/s;
+    const match = resposta.match(salvarRegex);
+
+    if (match) {
+      const tipo = match[1].toLowerCase();
+      try {
+        const dados = JSON.parse(match[2]);
+        if (tipo === 'candidatura') {
+          await pool.query(
+            'INSERT INTO candidaturas (nome, telefone, email, vaga) VALUES ($1,$2,$3,$4)',
+            [dados.nome, dados.telefone, dados.email, dados.vaga]
+          );
+        } else if (tipo === 'atestado') {
+          await pool.query(
+            'INSERT INTO atestados (nome, matricula, setor, data_inicio, dias, cid, medico) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+            [dados.nome, dados.matricula, dados.setor, dados.data_inicio, dados.dias, dados.cid||'', dados.medico||'']
+          );
+        } else if (tipo === 'exame') {
+          await pool.query(
+            'INSERT INTO exames (nome, matricula, setor, tipo, data_preferencia, turno, observacoes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+            [dados.nome, dados.matricula, dados.setor, dados.tipo, dados.data_preferencia, dados.turno, dados.observacoes||'']
+          );
+        } else if (tipo === 'falta') {
+          await pool.query(
+            'INSERT INTO faltas (nome, matricula, setor, data_falta, motivo, apresenta_atestado, descricao) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+            [dados.nome, dados.matricula, dados.setor, dados.data_falta, dados.motivo, dados.apresenta_atestado, dados.descricao||'']
+          );
+        }
+        console.log(`Salvo no banco: ${tipo}`, dados);
+      } catch (e) {
+        console.error('Erro ao salvar no banco:', e);
+      }
+      resposta = resposta.replace(salvarRegex, '').trim();
+    }
 
     conversas[de].push({ role: 'assistant', content: resposta });
 
-    // Envia resposta via Twilio
-    await client.messages.create({
+    await twilioClient.messages.create({
       from: req.body.To,
       to: de,
       body: resposta
     });
 
     res.sendStatus(200);
-
   } catch (erro) {
-    console.error('Erro:', erro);
+    console.error('Erro geral:', erro);
     res.sendStatus(500);
   }
 });
 
-// ── Rota de verificação ───────────────────────────────────────────────────────
-app.get('/', (req, res) => {
-  res.send('Sofia RH - Socorro Bebidas está online ✅');
+// ── Auth do painel ────────────────────────────────────────────────────────────
+function auth(req, res, next) {
+  if (req.headers['x-api-key'] === PAINEL_API_KEY) return next();
+  res.status(401).json({ erro: 'Não autorizado' });
+}
+
+// ── Endpoints do painel ───────────────────────────────────────────────────────
+app.get('/api/candidaturas', auth, async (req, res) => {
+  const r = await pool.query('SELECT * FROM candidaturas ORDER BY recebido_em DESC');
+  res.json(r.rows);
+});
+app.get('/api/atestados', auth, async (req, res) => {
+  const r = await pool.query('SELECT * FROM atestados ORDER BY recebido_em DESC');
+  res.json(r.rows);
+});
+app.get('/api/exames', auth, async (req, res) => {
+  const r = await pool.query('SELECT * FROM exames ORDER BY recebido_em DESC');
+  res.json(r.rows);
+});
+app.get('/api/faltas', auth, async (req, res) => {
+  const r = await pool.query('SELECT * FROM faltas ORDER BY recebido_em DESC');
+  res.json(r.rows);
+});
+app.delete('/api/:tabela/:id', auth, async (req, res) => {
+  const permitidas = ['candidaturas','atestados','exames','faltas'];
+  if (!permitidas.includes(req.params.tabela)) return res.status(400).json({ erro: 'Tabela inválida' });
+  await pool.query(`DELETE FROM ${req.params.tabela} WHERE id = $1`, [req.params.id]);
+  res.json({ ok: true });
 });
 
-// ── Inicia servidor ───────────────────────────────────────────────────────────
+app.get('/', (req, res) => res.send('Sofia RH - Socorro Bebidas está online ✅'));
+
+// ── Iniciar ───────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+iniciarBanco().then(() => {
+  app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
 });
