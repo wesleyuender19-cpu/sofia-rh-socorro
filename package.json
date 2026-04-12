@@ -1,0 +1,15 @@
+{
+  "name": "sofia-rh-socorro",
+  "version": "1.0.0",
+  "description": "Servidor da Sofia - Assistente de RH da Socorro Indústria de Bebidas",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "body-parser": "^1.20.2",
+    "node-fetch": "^2.7.0",
+    "twilio": "^4.19.0"
+  }
+}
