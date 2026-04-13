@@ -90,8 +90,6 @@ VAGAS DISPONÍVEIS:
 3. Motorista de Entregas (2 vagas) - Turno Diurno - CNH categoria D
 4. Auxiliar Administrativo (1 vaga) - Turno Comercial - Ensino Médio, pacote Office
 5. Analista de Qualidade (1 vaga) - Turno Diurno - Formação em Química ou Alimentos
-6. Técnico de Segurança do Trabalho (1 vaga) - Turno 12h por 36h - Curso técnico em segurança do trabalho
-7. Ajudante de Carga e Descarga (3 vagas) - Turno Diurno - Turno Noturno - Ensino fundamental e médio
 
 SE FOR FUNCIONÁRIO:
 Ofereça as 4 opções abaixo e colete os dados conforme cada caso:
@@ -192,7 +190,8 @@ app.post('/webhook', async (req, res) => {
       body: resposta
     });
 
-    res.sendStatus(200);
+    res.set('Content-Type', 'text/xml');
+    res.send('<Response></Response>');
   } catch (erro) {
     console.error('Erro geral:', erro);
     res.sendStatus(500);
