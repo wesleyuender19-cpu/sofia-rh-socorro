@@ -120,10 +120,32 @@ INSTRUÇÕES GERAIS:
 
 // ── Webhook — recebe mensagens do Twilio ──────────────────────────────────────
 app.post('/webhook', async (req, res) => {
-  const de      = req.body.From;
+  const de       = req.body.From;
   const mensagem = req.body.Body || '';
+  const numMidia = parseInt(req.body.NumMedia || '0');
 
   if (!conversas[de]) conversas[de] = [];
+
+  // ── Tratamento de imagem/arquivo ──────────────────────────────────────────
+  if (numMidia > 0) {
+    const tipoMidia = req.body.MediaContentType0 || '';
+    let confirmacao = '';
+
+    if (tipoMidia.startsWith('image/')) {
+      confirmacao = 'Imagem recebida com sucesso! Vou registrar que o documento foi enviado. O RH terá acesso ao arquivo para análise.';
+    } else if (tipoMidia === 'application/pdf') {
+      confirmacao = 'PDF recebido com sucesso! Vou registrar que o documento foi enviado. O RH terá acesso ao arquivo para análise.';
+    } else {
+      confirmacao = 'Arquivo recebido! O RH terá acesso ao documento enviado.';
+    }
+
+    conversas[de].push({ role: 'user', content: '[enviou um arquivo/documento]' });
+    conversas[de].push({ role: 'assistant', content: confirmacao });
+
+    await twilioClient.messages.create({ from: req.body.To, to: de, body: confirmacao });
+    res.status(200).end();
+    return;
+  }
   conversas[de].push({ role: 'user', content: mensagem });
   if (conversas[de].length > 20) conversas[de] = conversas[de].slice(-20);
 
@@ -190,8 +212,7 @@ app.post('/webhook', async (req, res) => {
       body: resposta
     });
 
-    res.set('Content-Type', 'text/xml');
-    res.send('<Response></Response>');
+    res.status(200).end();
   } catch (erro) {
     console.error('Erro geral:', erro);
     res.sendStatus(500);
